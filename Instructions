@@ -1,0 +1,239 @@
+
+
+
+
+
+
+Step 1: Open Your Workspace and Terminal
+Create a fresh folder on your computer named jmeter-ai-agent.
+
+Open VSCode, go to File > Open Folder, and select that folder.
+
+Open the integrated terminal inside VSCode by pressing Ctrl + `  (or Cmd + ~ on a Mac).
+
+Step 2: Initialize a Virtual Environment
+In your VSCode terminal, run the following commands to create and activate an isolated Python environment:
+
+# Create the environment inside a hidden folder named '.venv'
+python -m venv .venv
+
+# Activate it based on your operating system:
+# For Windows (PowerShell):
+.venv\Scripts\Activate.ps1
+
+# For Mac / Linux:
+source .venv/bin/activate
+
+
+Step 3: Tell VSCode to Use Your Virtual Environment
+Press Ctrl + Shift + P (or Cmd + Shift + P on Mac) to open the VSCode Command Palette.
+
+Type Python: Select Interpreter and click it.
+
+Choose the option pointing to your virtual environment (it should say something like Python 3.x.x ('.venv': venv)). This guarantees that VSCode's internal features match your terminal.
+
+
+
+
+
+
+Step 4: Install Dependencies
+Copy and run this command in your active terminal to pull in the proper networking and user interface packages:
+
+pip install streamlit openai lxml pydantic
+
+
+Step 5: Save the Code Engine
+Click the New File icon in the VSCode file explorer on the left and name it app.py.
+
+Paste the full Azure OpenAI Streamlit code block provided in the previous message directly into this file.
+
+# app.py
+import streamlit as st
+import os
+import json
+from openai import AzureOpenAI  # <-- Changed to Azure-specific client
+from lxml import etree
+from pydantic import BaseModel, Field
+from typing import List
+
+# Enforce strict data contract from LLM
+class DynamicValue(BaseModel):
+    parameter_name: str = Field(description="Logical name of the dynamic token (e.g., user_token, session_id)")
+    hardcoded_value: str = Field(description="The static string value found inside the JMX file")
+    source_request_index: int = Field(description="The zero-based index of the sampler where this token originates")
+    target_request_indices: List[int] = Field(description="List of sampler indices where this token is hardcoded/reused")
+
+class AnalysisReport(BaseModel):
+    flow_description: str = Field(description="High-level description of what the user transaction flow is doing")
+    dynamic_values: List[DynamicValue] = Field(description="List of variables flagged for correlation")
+
+class ExtractionRule(BaseModel):
+    parameter_name: str
+    extractor_type: str = Field(description="Boundary, RegEx, or JSON_Path")
+    search_field: str = Field(description="Headers, Body, or URL")
+    expression: str = Field(description="The matching rule or boundary syntax (left/right boundaries)")
+
+class CorrelationPlan(BaseModel):
+    extraction_rules: List[ExtractionRule]
+
+# --- STREAMLIT UI SETUP ---
+st.set_page_config(page_title="Azure Agentic JMeter Correlator", page_icon="⚙️", layout="wide")
+st.title("🤖 Agentic AI JMeter Correlation Engine (Azure OpenAI)")
+st.write("Upload your raw recorded `.jmx` file and its traffic companion `recording.xml` to automatically discover and map dynamic tokens.")
+
+# --- AZURE CREDENTIALS SIDEBAR ---
+st.sidebar.header("🔐 Azure OpenAI Configuration")
+azure_endpoint = st.sidebar.text_input("Azure Endpoint", placeholder="https://your-resource.openai.azure.com/")
+azure_api_key = st.sidebar.text_input("Azure API Key", type="password")
+azure_deployment = st.sidebar.text_input("GPT-4o Deployment Name", placeholder="e.g., gpt-4o-deployment")
+azure_api_version = st.sidebar.text_input("API Version", value="2024-08-01-preview")
+
+# Initialize Azure OpenAI Client if credentials are provided
+client = None
+if azure_endpoint and azure_api_key and azure_deployment:
+    try:
+        client = AzureOpenAI(
+            azure_endpoint=azure_endpoint,
+            api_key=azure_api_key,
+            api_version=azure_api_version
+        )
+    except Exception as e:
+        st.sidebar.error(f"Initialization Error: {e}")
+else:
+    st.sidebar.info("💡 Please input your Azure OpenAI configurations in this sidebar panel to unlock processing capabilities.")
+
+# Layout split for uploads
+col1, col2 = st.columns(2)
+
+with col1:
+    jmx_file = st.file_uploader("Upload Raw JMX File (.jmx)", type=["jmx"])
+
+with col2:
+    xml_file = st.file_uploader("Upload Recording XML Traffic Log (.xml)", type=["xml"])
+
+# Core execution trigger
+if st.button("🚀 Analyze & Correlate Script", type="primary", disabled=not (jmx_file and xml_file and client)):
+    
+    # Read files out of Streamlit memory buffers
+    jmx_raw = jmx_file.getvalue().decode("utf-8")
+    xml_raw = xml_file.getvalue().decode("utf-8")
+    
+    # Status placeholders for console logging simulation
+    status_box = st.status("🕵️ Agent Workflow Engaged...", expanded=True)
+    
+    try:
+        # --- AGENT 1: ANALYSIS AGENT ---
+        status_box.write("🔄 **[Agent 1 - Analysis]** Scanning assets for hardcoded dynamic tokens via Azure...")
+        analysis_prompt = f"""
+        You are an expert Performance Engineer Agent. Analyze this raw JMeter script and the traffic recording file.
+        Identify dynamic variables (session tokens, CSRF, state parameters) that need extraction.
+        
+        Raw JMX Structure:
+        {jmx_raw[:40000]}
+        
+        Recording XML Log:
+        {xml_raw[:40000]}
+        """
+        
+        # Azure target syntax call utilizing structured schema definitions
+        analysis_completion = client.beta.chat.completions.parse(
+            model=azure_deployment,  # <-- Uses your custom deployment name variable
+            messages=[{"role": "user", "content": analysis_prompt}],
+            response_format=AnalysisReport,
+        )
+        analysis_report = analysis_completion.choices[0].message.parsed
+        status_box.write(f"✅ **[Agent 1]** Found {len(analysis_report.dynamic_values)} candidate strings for extraction.")
+        
+        # --- AGENT 2: CORRELATION AGENT ---
+        status_box.write("🔄 **[Agent 2 - Correlation]** Determining optimal native extraction paths...")
+        correlation_prompt = f"""
+        Review this analysis report outlining dynamic strings needing correlation:
+        {analysis_report.model_dump_json(indent=2)}
+        
+        Generate strict, bulletproof JMeter extraction rules (using BoundaryExtractor, RegexExtractor, or JSON Post Processor) targeting the native structure.
+        """
+        
+        correlation_completion = client.beta.chat.completions.parse(
+            model=azure_deployment,
+            messages=[{"role": "user", "content": correlation_prompt}],
+            response_format=CorrelationPlan,
+        )
+        correlation_plan = correlation_completion.choices[0].message.parsed
+        status_box.write("✅ **[Agent 2]** Finished generating target Post-Processor definitions.")
+        
+        # --- AGENT 3: TRANSFORMATION ENGINE AGENT ---
+        status_box.write("🔄 **[Agent 3 - Transformation]** Rendering custom Python parsing engine code...")
+        transformation_prompt = f"""
+        Write a complete, executable Python transformation code snippet utilizing the native 'lxml' library.
+        The script must read raw JMX text from an environment variable string named 'INPUT_JMX_STR', manipulate its DOM tree using XML elements to embed JMeter Post-Processors based on this scheme, and output the updated tree structure as a string assigned to a global variable called 'OUTPUT_JMX_STR'.
+        
+        Rules Map:
+        {correlation_plan.model_dump_json(indent=2)}
+        
+        Requirements:
+        - Construct proper native elements (e.g., `<BoundaryExtractor>` or `<RegexExtractor>`) alongside their exact internal `<stringProp>` nodes.
+        - Globally substitute hardcoded token references with standard `${{parameter_name}}` templates within targeted HTTP Samplers.
+        - Output *ONLY* pure, unadorned executable Python text inside markdown formatting blocks.
+        """
+        
+        transformation_completion = client.chat.completions.create(
+            model=azure_deployment,
+            messages=[{"role": "system", "content": "You output strict executable code blocks without conversation."},
+                      {"role": "user", "content": transformation_prompt}]
+        )
+        raw_code_block = transformation_completion.choices[0].message.content
+        clean_python_code = raw_code_block.replace("```python", "").replace("```", "").strip()
+        status_box.write("✅ **[Agent 3]** Python transformation logic generated successfully.")
+        
+        # --- AGENT 4: JMX COMPILER & PACKAGER ---
+        status_box.write("🔄 **[Agent 4 - Compiler]** Compiling modifications onto DOM tree...")
+        
+        execution_scope = {
+            "INPUT_JMX_STR": jmx_raw,
+            "OUTPUT_JMX_STR": ""
+        }
+        
+        # Dynamically execute code produced by Agent 3
+        exec(clean_python_code, execution_scope)
+        final_jmx_output = execution_scope.get("OUTPUT_JMX_STR", "")
+        
+        if not final_jmx_output or final_jmx_output == jmx_raw:
+            status_box.write("⚠️ Structural generation variance encountered. Engaging text-based safe substitution layer...")
+            processed_jmx = jmx_raw
+            for val in analysis_report.dynamic_values:
+                processed_jmx = processed_jmx.replace(val.hardcoded_value, f"${{{val.parameter_name}}}")
+            final_jmx_output = processed_jmx
+
+        status_box.update(label="🎉 Script Parsing and Assembly Sequence Complete!", state="complete")
+        
+        st.success("Your correlated JMeter script is compiled and ready!")
+        
+        # Download Action Trigger Button
+        st.download_button(
+            label="💾 Download Correlated JMX File",
+            data=final_jmx_output,
+            file_name="correlated_production_ready.jmx",
+            mime="application/xml",
+            use_container_width=True
+        )
+        
+        # Structural Debug Accordions
+        with st.expander("🔍 View AI Extracted Dynamic Map Summary"):
+            st.json(analysis_report.model_dump())
+            
+        with st.expander("🛠️ View Auto-Generated Python Code Engine"):
+            st.code(clean_python_code, language="python")
+
+    except Exception as error:
+        status_box.update(label="❌ Pipeline Processing Error", state="error")
+        st.error(f"Execution boundary halted unexpectedly: {str(error)}")
+
+Save the file (Ctrl + S).
+
+
+
+
+Step 6: Launch Your Interface
+Type the following execution string into your terminal panel to spin up the local server framework:
+streamlit run app.py
